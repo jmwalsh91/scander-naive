@@ -1,2 +1,4 @@
 output.json
 .env
+output/
+input/
