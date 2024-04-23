@@ -6,12 +6,13 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/charmbracelet/log"
 	"github.com/joho/godotenv"
 )
 
@@ -27,7 +28,7 @@ const (
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Println("Warning: .env file not found.")
+		log.Warn("Warning: .env file not found.")
 	}
 
 	apiKey := os.Getenv("OPENAI_API_KEY")
@@ -35,37 +36,65 @@ func main() {
 		log.Fatal("OPENAI_API_KEY is not set in environment variables.")
 	}
 
-	inputFilePath := flag.String("input", "", "Path to the input text file")
+	inputDirPath := flag.String("input", "", "Path to the input directory")
+	outputDirPath := flag.String("output", "output", "Path to the output directory")
 	flag.Parse()
 
-	if *inputFilePath == "" {
-		log.Fatal("Please specify an input file path using the --input flag.")
+	if *inputDirPath == "" {
+		log.Fatal("Please specify an input directory path using the --input flag.")
 	}
 
-	content, err := ioutil.ReadFile(*inputFilePath)
+	if err := os.MkdirAll(*outputDirPath, os.ModePerm); err != nil {
+		log.Fatalf("Failed to create output directory: %s", err)
+	}
+
+	log.Info("Starting processing...")
+
+	files, err := ioutil.ReadDir(*inputDirPath)
 	if err != nil {
-		log.Fatalf("Failed to read input file: %s", err)
+		log.Fatalf("Failed to read input directory: %s", err)
 	}
 
-	var snippetLabelPairs []SnippetLabelPair
-	chunks := splitText(string(content), maxTokens)
-	for _, chunk := range chunks {
-		pairs := processText(chunk, apiKey)
-		snippetLabelPairs = append(snippetLabelPairs, pairs...)
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		inputFilePath := filepath.Join(*inputDirPath, file.Name())
+		log.Infof("Processing file: %s", inputFilePath)
+
+		content, err := ioutil.ReadFile(inputFilePath)
+		if err != nil {
+			log.Errorf("Failed to read input file: %s", err)
+			continue
+		}
+
+		var snippetLabelPairs []SnippetLabelPair
+		chunks := splitText(string(content), maxTokens)
+		for _, chunk := range chunks {
+			log.Info("Getting snippet label pairs...")
+			pairs := processText(chunk, apiKey)
+			snippetLabelPairs = append(snippetLabelPairs, pairs...)
+		}
+
+		outputData, err := json.MarshalIndent(snippetLabelPairs, "", "  ")
+		if err != nil {
+			log.Errorf("Failed to marshal data into JSON: %s", err)
+			continue
+		}
+
+		outputFileName := strings.TrimSuffix(file.Name(), filepath.Ext(file.Name())) + ".json"
+		outputFilePath := filepath.Join(*outputDirPath, outputFileName)
+
+		if err := ioutil.WriteFile(outputFilePath, outputData, 0644); err != nil {
+			log.Errorf("Failed to write output to file: %s", err)
+			continue
+		}
+
+		log.Infof("Output successfully written to %s", outputFilePath)
 	}
 
-	outputData, err := json.MarshalIndent(snippetLabelPairs, "", "  ")
-	if err != nil {
-		log.Fatalf("Failed to marshal data into JSON: %s", err)
-	}
-
-	fmt.Println(string(outputData))
-
-	if err := ioutil.WriteFile("output.json", outputData, 0644); err != nil {
-		log.Fatalf("Failed to write output to file: %s", err)
-	}
-
-	log.Println("Output successfully written to output.json")
+	log.Info("Processing completed.")
 }
 
 func processText(text, apiKey string) []SnippetLabelPair {
@@ -107,7 +136,7 @@ func generateSnippetLabelPairs(text, apiKey string) []SnippetLabelPair {
 		log.Fatalf("Error reading response body: %s", err)
 	}
 
-	fmt.Println(string(body))
+	log.Debugf("OpenAI API Response: %s", string(body))
 
 	var response struct {
 		Choices []struct {
@@ -122,7 +151,7 @@ func generateSnippetLabelPairs(text, apiKey string) []SnippetLabelPair {
 	}
 
 	if len(response.Choices) == 0 {
-		log.Println("No choices were returned by OpenAI.")
+		log.Warn("No choices were returned by OpenAI.")
 		return []SnippetLabelPair{}
 	}
 
